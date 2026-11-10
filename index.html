@@ -1,0 +1,162 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Gods Eye Weather</title>
+<link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css">
+<style>
+  * { box-sizing: border-box; }
+  body { margin: 0; font-family: system-ui, -apple-system, Segoe UI, Roboto, sans-serif; background: #0b1020; color: #e8ecf5; }
+  #map { height: 100vh; width: 100%; background: #0b1020; }
+  .panel { position: absolute; z-index: 1000; left: 12px; top: 12px; background: rgba(11,16,32,.92); border: 1px solid rgba(255,255,255,.14); border-radius: 14px; padding: 12px 14px; max-width: 340px; backdrop-filter: blur(6px); }
+  .panel h1 { margin: 0; font-size: 20px; letter-spacing: .2px; }
+  .panel p { margin: 6px 0 0; font-size: 13px; color: #b9c2d6; line-height: 1.45; }
+  .row { display: flex; gap: 8px; margin-top: 10px; flex-wrap: wrap; align-items: center; }
+  button, select, input { font: inherit; }
+  button { background: #2b6cff; color: #fff; border: 0; border-radius: 999px; padding: 7px 12px; cursor: pointer; }
+  button.ghost { background: rgba(255,255,255,.12); }
+  button.active { outline: 2px solid #fff; }
+  input { background: rgba(255,255,255,.1); color: #fff; border: 1px solid rgba(255,255,255,.2); border-radius: 999px; padding: 7px 10px; width: 150px; }
+  input::placeholder { color: #9aa5bd; }
+  .stats { display: flex; gap: 12px; margin-top: 10px; font-size: 12px; color: #d6deee; flex-wrap: wrap; }
+  .stats b { color: #fff; }
+  .legend { position: absolute; z-index: 1000; right: 12px; bottom: 18px; background: rgba(11,16,32,.92); border: 1px solid rgba(255,255,255,.14); border-radius: 12px; padding: 10px 12px; font-size: 12px; line-height: 1.7; }
+  .dot { display: inline-block; width: 10px; height: 10px; border-radius: 50%; margin-right: 6px; vertical-align: middle; }
+  .status { font-size: 12px; color: #9aa5bd; margin-top: 8px; }
+  .pin { display: flex; align-items: center; justify-content: center; width: 34px; height: 34px; border-radius: 50% 50% 50% 4px; transform: rotate(-45deg); color: #fff; font-weight: 800; font-size: 12px; border: 2px solid #fff; box-shadow: 0 2px 8px rgba(0,0,0,.5); }
+  .pin span { transform: rotate(45deg); }
+  .leaflet-popup-content { color: #111; font-size: 14px; line-height: 1.5; }
+  .leaflet-popup-content b { font-size: 15px; }
+  @media (max-width: 640px) { .panel { max-width: calc(100vw - 24px); } .legend { display: none; } }
+</style>
+</head>
+<body>
+<div id="map"></div>
+<div class="panel">
+  <h1>Gods Eye Weather</h1>
+  <p>Live weather for major cities around the world, from Open-Meteo. No key, no login, updated every 15 minutes.</p>
+  <div class="row">
+    <input id="search" type="search" placeholder="Search a city" aria-label="Search a city">
+    <button id="unitF" class="active" type="button">F</button>
+    <button id="unitC" class="ghost" type="button">C</button>
+    <button id="refresh" class="ghost" type="button">Refresh</button>
+  </div>
+  <div class="stats" id="stats"></div>
+  <div class="status" id="status">Loading live weather...</div>
+</div>
+<div class="legend">
+  <div><span class="dot" style="background:#38bdf8"></span>Below 32F / 0C</div>
+  <div><span class="dot" style="background:#22c55e"></span>32 to 65F / 0 to 18C</div>
+  <div><span class="dot" style="background:#eab308"></span>65 to 80F / 18 to 27C</div>
+  <div><span class="dot" style="background:#f97316"></span>80 to 90F / 27 to 32C</div>
+  <div><span class="dot" style="background:#ef4444"></span>Above 90F / 32C</div>
+</div>
+<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+<script>
+let cities = [];
+let weatherByName = {};
+let unit = 'F';
+let markers = [];
+let map;
+
+function wmoText(code) {
+  const m = {0:'Clear sky',1:'Mainly clear',2:'Partly cloudy',3:'Overcast',45:'Fog',48:'Icy fog',51:'Light drizzle',53:'Drizzle',55:'Dense drizzle',56:'Freezing drizzle',57:'Freezing drizzle',61:'Light rain',63:'Rain',65:'Heavy rain',66:'Freezing rain',67:'Freezing rain',71:'Light snow',73:'Snow',75:'Heavy snow',77:'Snow grains',80:'Light showers',81:'Showers',82:'Heavy showers',85:'Snow showers',86:'Snow showers',95:'Thunderstorm',96:'Thunderstorm with hail',99:'Thunderstorm with hail'};
+  return m[code] || 'Unknown';
+}
+function wmoEmoji(code) {
+  if (code === 0) return '☀️';
+  if (code === 1 || code === 2) return '⛅';
+  if (code === 3) return '☁️';
+  if (code === 45 || code === 48) return '🌫️';
+  if ([51,53,55,56,57].includes(code)) return '🌦️';
+  if ([61,63,65,66,67,80,81,82].includes(code)) return '🌧️';
+  if ([71,73,75,77,85,86].includes(code)) return '❄️';
+  if ([95,96,99].includes(code)) return '⛈️';
+  return '🌤️';
+}
+function tempColor(tempF) {
+  if (tempF < 32) return '#38bdf8';
+  if (tempF < 65) return '#22c55e';
+  if (tempF < 80) return '#eab308';
+  if (tempF < 90) return '#f97316';
+  return '#ef4444';
+}
+function showTemp(tempF) {
+  if (unit === 'F') return Math.round(tempF) + '°F';
+  return Math.round((tempF - 32) * 5 / 9) + '°C';
+}
+function showWind(mph) {
+  if (unit === 'F') return Math.round(mph) + ' mph';
+  return Math.round(mph * 1.609) + ' km/h';
+}
+function render() {
+  markers.forEach(m => map.removeLayer(m));
+  markers = [];
+  let hottest = null, coldest = null, windiest = null;
+  cities.forEach(city => {
+    const w = weatherByName[city.name];
+    if (!w) return;
+    const tempF = w.temperature_2m;
+    const color = tempColor(tempF);
+    const icon = L.divIcon({ className: '', html: '<div class="pin" style="background:' + color + '"><span>' + Math.round(unit === 'F' ? tempF : (tempF - 32) * 5 / 9) + '°</span></div>', iconSize: [34, 34], iconAnchor: [17, 32], popupAnchor: [0, -30] });
+    const marker = L.marker([city.lat, city.lon], { icon, title: city.name }).addTo(map);
+    marker.bindPopup('<b>' + city.name + ', ' + city.country + '</b><br>' + wmoEmoji(w.weather_code) + ' ' + wmoText(w.weather_code) + '<br>Temp: <b>' + showTemp(tempF) + '</b><br>Humidity: ' + w.relative_humidity_2m + '%<br>Wind: ' + showWind(w.wind_speed_10m) + '<br>Local time: ' + w.time);
+    markers.push(marker);
+    if (!hottest || tempF > hottest.temp) hottest = { name: city.name, temp: tempF };
+    if (!coldest || tempF < coldest.temp) coldest = { name: city.name, temp: tempF };
+    if (!windiest || w.wind_speed_10m > windiest.wind) windiest = { name: city.name, wind: w.wind_speed_10m };
+  });
+  if (hottest) {
+    document.getElementById('stats').innerHTML = 'Hottest: <b>' + hottest.name + ' ' + showTemp(hottest.temp) + '</b> &nbsp; Coldest: <b>' + coldest.name + ' ' + showTemp(coldest.temp) + '</b> &nbsp; Windiest: <b>' + windiest.name + ' ' + showWind(windiest.wind) + '</b>';
+  }
+}
+async function fetchBatch(batch) {
+  const lats = batch.map(c => c.lat).join(',');
+  const lons = batch.map(c => c.lon).join(',');
+  const url = 'https://api.open-meteo.com/v1/forecast?latitude=' + lats + '&longitude=' + lons + '&current=temperature_2m,relative_humidity_2m,wind_speed_10m,weather_code&temperature_unit=fahrenheit&wind_speed_unit=mph&timezone=auto';
+  const res = await fetch(url);
+  if (!res.ok) throw new Error('Open-Meteo returned ' + res.status);
+  const data = await res.json();
+  const list = Array.isArray(data) ? data : [data];
+  list.forEach((item, i) => { weatherByName[batch[i].name] = item.current; });
+}
+async function load() {
+  document.getElementById('status').textContent = 'Loading live weather...';
+  try {
+    for (let i = 0; i < cities.length; i += 20) {
+      await fetchBatch(cities.slice(i, i + 20));
+    }
+    render();
+    document.getElementById('status').textContent = 'Live now, ' + cities.length + ' cities, updated ' + new Date().toLocaleTimeString() + '. Source: Open-Meteo.';
+  } catch (e) {
+    document.getElementById('status').textContent = 'Could not load live weather right now. Check your connection and tap Refresh. (' + e.message + ')';
+  }
+}
+function setUnit(u) {
+  unit = u;
+  document.getElementById('unitF').className = u === 'F' ? 'active' : 'ghost';
+  document.getElementById('unitC').className = u === 'C' ? 'active' : 'ghost';
+  render();
+}
+async function init() {
+  map = L.map('map').setView([20, 0], 2);
+  L.tileLayer('https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png', { attribution: '&copy; OpenStreetMap &copy; CARTO', maxZoom: 18 }).addTo(map);
+  const res = await fetch('cities.json');
+  cities = await res.json();
+  document.getElementById('unitF').addEventListener('click', () => setUnit('F'));
+  document.getElementById('unitC').addEventListener('click', () => setUnit('C'));
+  document.getElementById('refresh').addEventListener('click', load);
+  document.getElementById('search').addEventListener('input', (e) => {
+    const q = e.target.value.trim().toLowerCase();
+    if (!q) return;
+    const hit = cities.find(c => c.name.toLowerCase().startsWith(q) || c.name.toLowerCase().includes(q));
+    if (hit) map.flyTo([hit.lat, hit.lon], 5, { duration: 1 });
+  });
+  await load();
+  setInterval(load, 15 * 60 * 1000);
+}
+init();
+</script>
+</body>
+</html>
